@@ -3,6 +3,10 @@
 ## Introduction
 This project involves analyzing gym usage data on a university campus using various data analysis and machine learning techniques. We employ Recency, Frequency, and Monetary (RFM) analysis, K-Means clustering, and Hierarchical clustering to segment and profile gym visitors. 
 
+- RMarkdown file found [here](https://github.com/darensoh/R_Customer_Analytics/blob/main/RFM%2C%20K-Means%20and%20Hierarchical%20Clustering.Rmd).
+- PDF file found [here](https://github.com/darensoh/R_Customer_Analytics/blob/main/RFM%2C%20K-Means%20and%20Hierarchical%20Clustering.pdf).
+- Data source found [here](https://github.com/darensoh/R_Customer_Analytics/blob/main/gym_staff.xlsx).
+
 ## Background
 Understanding customer behavior through data analytics can help improve service offerings and customer satisfaction. This project aims to analyze gym usage data to answer key business questions about customer visits and revenue generation, and to profile different segments of gym visitors.
 
