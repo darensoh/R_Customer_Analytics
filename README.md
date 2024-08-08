@@ -1,5 +1,3 @@
-# Customer Analytics 
-
 # RFM, K-Means, and Hierarchical Clustering Analysis
 
 ## Introduction
