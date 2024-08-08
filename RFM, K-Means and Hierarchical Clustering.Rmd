@@ -1,0 +1,694 @@
+---
+title: "RFM, K-Means and Hierarchical Clustering"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Recency, Frequency, and Monetary (RFM) Model
+
+## Objective 
+
+To review the gym usage on campus.
+
+Questions:
+1. What are the average frequency and duration of gym visit across gym visitors?
+2. How can RFM model help to segment and profile our gym visitors? 
+3. How has the profile of the gym users change over time? 
+4. Explore other attributes associated to different gym visitor segments. 
+
+# Load the required libraries.
+
+```{r package}
+# Load libraries
+pacman::p_load(readxl, lubridate, tidyverse, ggplot2, treemapify, rfm, caret, cluster, factoextra, plotly)
+```
+
+# Load and Inspect the data.
+
+```{r import}
+# Read in the whole gym dataset
+df <- read_excel("gym_staff.xlsx") # Paste file path here
+
+# Check the dataset structure
+str(df)
+
+# Check summary
+summary(df)
+
+#change variables in character format to factor
+df <- df %>% mutate_if(is.character,as.factor) 
+
+#transform POSIXct object to date format (ymd means year, month, day). 
+df$Date <- ymd(df$Date) 
+```
+
+# Data Cleaning
+
+```{r data cleaning}
+## Check for missing values
+sum(is.na(df))
+
+## Return rows with missing values in any variable
+df[rowSums(is.na(df)) > 0, ] 
+
+## Check for duplicated rows
+sum(duplicated(df))
+```
+
+# (Latency) What is the typical time span between gym visits?
+
+## Number of visits per customer
+First, we will find how frequent our customers visit the gym. To do so, we will need to re-arrange our dataset to count the number of visits per customer.
+
+```{r frequency}
+# Group the rows by customers and count them. 
+df_visits <- df %>% 
+  group_by(ID) %>%
+  mutate(Visit=n()) %>%
+  distinct(ID, .keep_all = TRUE)
+
+#Show the descriptive statistics for the number of visits
+summary(df_visits$Visit)
+summary(df_visits)
+```
+
+
+## What are the number of days between visits to the gym?
+
+```{r latency1}
+# Similarly, we will arrange the ID, group the ID, calculate the date difference between the rows and add the results into a new column "counter".
+df_days<- df %>%
+  group_by(ID) %>%
+  mutate(Date_Diff = as.numeric(difftime(Date, lag(Date), units = "days"))) %>%         
+  mutate(counter=seq_along(ID))%>%
+  arrange(ID)
+
+view(df_days)
+
+# Select the required variables
+df_days <- df_days %>%
+  select(ID, counter, Date_Diff) 
+
+```
+
+## (Latency) What is the average number of days between gym visits?
+
+```{r latency2}
+# Pivot the dataframe into a table showing the days between each visits
+# Vertical to Horizontal
+latency <- pivot_wider(df_days, names_from =counter, values_from = Date_Diff)
+
+# Remove ID to rownames
+latency <- as.data.frame(latency)
+rownames(latency) <- latency[,"ID"] 
+latency$`ID` <- NULL
+
+# We can choose to remove column "1", since it represents the first visit
+latency$`1` <- NULL
+
+# Calculate the means, median and number of unique gym visitors.'na.rm = TRUE' means remove NA.
+lmean <-round(colMeans(latency, na.rm = TRUE), digit=2)
+# apply(array, 1 -> row, 2 -> column)
+lmedian <- apply(latency,2,median, na.rm = TRUE)
+lcount <- apply(latency, 2, function(x) sum(!is.na(x)))
+
+# (rbind/rowbind) Bind the lmean and lmedian into the latency dataset
+lsummary <- rbind(lcount, lmean, lmedian) 
+rownames(lsummary) <- c("Count", "Mean","Median") 
+
+```
+
+# What is the duration for each visit?
+
+```{r duration}
+# Calculate the gym duration
+df$duration <- difftime(df$Checkout, df$Checkin, units = "mins")
+
+# Convert the variable into numeric mode
+df$duration <- round(as.numeric(df$duration),2)
+
+# Check the descriptive statistics for duration
+summary(df$duration) #variable must be in numeric mode
+
+# Visualise the data
+hist(df$duration) #variable must be in numeric mode
+```
+
+# (Customer Lifetime Value) Which generates more revenue: single entry or membership?
+
+Assume that these are the yearly and per entry fees:
+Gym Membership (Yearly) - $100
+Gym Individual (Single Entry) - $4.50 
+
+## How much revenue will the gym earn?
+```{r clv}
+# Which one is more popular? Single entry or membership?
+summary(as.factor(df_visits$Passtype))
+
+# (grepl) Look for the text and calculate the cost and add to column "Membership". 
+df_visits$Membership <- ifelse(grepl("Fitness Gym Membership", df_visits$Passtype)==TRUE, 100, 0) 
+
+# (grepl) Look for the text and calculate the cost and add to column "Single"..
+df_visits$Single <- ifelse(grepl("Per-Entry Ticket", df_visits$Passtype)==TRUE, df_visits$Visit*4.50, 0)
+
+#How much revenue does the gym earn for Membership and Single?
+Revenue_membership <- sum(df_visits$Membership)
+Revenue_single <- sum(df_visits$Single)
+Total_revenue <- Revenue_membership + Revenue_single
+
+# Suppose the users were to visit the same number of times for the next 5 years, the expected CLV will be.
+df_visits$year5 <- ifelse(df_visits$Membership==100, df_visits$Membership* 5, df_visits$Single*5)
+
+# Visualise the CLV distribution
+hist(df_visits$year5)
+```
+
+This is evident that the membership will provide the gym with a stable income as compared to the single entry users. 
+
+# Customer Lifetime Value) Identify potential members.
+Customer analytics do not end here. The questions now is can we entice more users to sign up for membership? Who are paying more and how much can they save if they were to sign up for membership?
+
+```{r clv potential}
+# Filter potential members based on spending more than $100 (membership fees)
+Potential_member <- df_visits %>% 
+  filter(Single>100) 
+
+View(Potential_member)
+
+Potential_member$Savings <- Potential_member$Single - 100
+```
+
+# Exploratory Data Analysis -  Data Visualisation
+EDA is a process that can be used to summarise main characteristics, identify interesting patterns, and identify outliers. 
+
+```{r eda}
+# EDA - Type of passes
+ggplot(df) + geom_bar(aes(y=Passtype)) 
+
+# EDA - Gender vs duration
+ggplot(df) + geom_boxplot(aes(x=Gender, y=duration)) 
+
+# EDA - Age vs Passtype
+ggplot(df) + geom_bar(aes(y=Age, fill=Passtype), position = "fill") 
+
+## EDA - Gender vs Passtype
+ggplot(df) + geom_bar(aes(y=Gender, fill=Passtype), position = "fill") 
+
+## EDA - ULU vs Passtype
+ggplot(df, aes(y=ULU, fill=Passtype)) + geom_bar(aes(y=ULU, fill=Passtype)) 
+```
+
+# What are the average frequency and duration of gym visit across gym visitors? 
+
+## Descriptive Statistic
+
+```{r avg freq & duration stat}
+# Calculate the gym duration which is the difference between Checkin and Checkout time
+df$Duration <- as.numeric(difftime(df$Checkout, df$Checkin, units = "mins")) 
+
+# Create a dataframe for the number of visits and average duration
+df_visits <- df %>% 
+  select(ID, Duration) %>%  #select only these two variables, ID & Duration
+  group_by(ID) %>%
+  summarise(Visit=n(), Average_Duration = mean(Duration)) # calculate the number of visit and average duration per visit for each gym visitor
+     
+# Descriptive statistic for the number of visits and average duration.
+summary(df_visits$Average_Duration) 
+summary(df_visits$Visit)
+```
+
+## Data Visualistion
+
+```{r avg freq & duration vis}
+# Create histogram plots
+## ggplot() initialises the ggplot object and it is used to declare the input data frame, geom_histogram returns a layer that contains a histogram 
+ggplot(df_visits) + geom_histogram(aes(x=Visit))
+ggplot(df_visits) + geom_histogram(aes(x=Average_Duration))
+
+## replace geom_histogram with geom_freqpoly.
+ggplot(df_visits) + geom_freqpoly(aes(x=Visit))
+ggplot(df_visits) + geom_freqpoly(aes(x=Average_Duration))
+```
+
+Insights:
+1. Visits taper off over number of visits
+2. Average Duration faces normal distribution.
+
+# How can we use RFM model to segment and profile our gym visitors? 
+
+## RFM Analysis
+
+```{r rfm analysis}
+# Determine the analysis date
+analysis_date <- lubridate::as_date('2022-06-30')
+
+# Create a new column customer_id
+df$customer_id <- df$ID
+
+# Perform RFM analysis
+rfm_result <- rfm_table_order(df,customer_id, Date, Duration, analysis_date)
+
+str(rfm_result)
+# View(rfm_result$rfm)
+```
+
+## Customer Segmentation
+
+```{r customer segmentation}
+# Check threshold for each score
+rfm_result$threshold 
+
+#Gym Addicts = super committed and hardworking
+#Fat Burners = do not come regularly, but spend long duration to burn fat at every visit
+#Gym Regulars = your average regular gym goers
+#At-Risk = used to be frequent goers, but have not visited the gym recently
+#Low Priority = rarely goes to the gym and does not spend much time there.  
+#New = newcomers
+#Others = other gym visitors (no intention to focus on them at the moment)
+segment_names <- c("Gym Addicts", "Fat Burners", "Gym Regulars", "At-Risk", "Low Priority", "New", "Others")
+
+# Set the boundary for each of the scores
+recency_lower <- c(4, 1, 3, 1, 1, 4, 1)
+recency_upper <- c(5, 2, 5, 2, 2, 5, 5)
+frequency_lower <- c(4, 1, 2, 3, 1, 1, 1)
+frequency_upper <- c(5, 2, 5, 5, 2, 2, 5)
+monetary_lower <- c(4, 4, 2, 3, 1, 1, 1)
+monetary_upper <- c(5, 5, 5, 5, 2, 2, 5)
+
+# Create segments based on recency, frequency and monetary scores.
+segments <- rfm_segment(rfm_result, segment_names, recency_lower, recency_upper,
+frequency_lower, frequency_upper, monetary_lower, monetary_upper)
+
+# Create summary table of the different segments
+segments_table <- segments %>%
+  distinct(ID, .keep_all = TRUE) %>% 
+  group_by(segment) %>% 
+  summarise(Recency_mean = mean(recency_days), Frequency_mean = mean(transaction_count), Duration_mean = mean(amount), Count = n()) %>%
+  mutate(Proportion=Count/sum(Count),Percentage=scales::percent(Proportion)) 
+
+```
+
+## Data Visualisation
+
+```{r customer segmentation vis}
+# Treemap
+ggplot(segments_table, aes(area = Count, fill= Percentage, label = paste(segment,Percentage,sep="\n"))) +
+   geom_treemap() +
+   geom_treemap_text(
+     colour = "white",
+     place = "centre",
+     size = 15,
+   ) + theme(legend.position="none")
+
+# The RFM package also includes several functions to plot charts
+rfm_plot_median_recency(segments)
+rfm_plot_median_frequency(segments)
+rfm_plot_median_monetary(segments)
+rfm_heatmap(rfm_result)
+rfm_bar_chart(rfm_result)
+rfm_order_dist(rfm_result)
+
+```
+
+# How does the profile of our gym users change over time?
+
+For certain purposes, it may be more insightful to see the change in RFM score. Let us see the change in customer segments based on RFM score between Q1 2022 and Q2 2022. 
+
+## Separate the dataset to Q1 2022 and Q2 2022
+```{r split dataset}
+#  Mutate a new column to specify Q1 or Q2
+df <- df %>% mutate (Quarter = case_when(Date < "2022-04-01" ~ "Q1 2022", Date < "2022-07-01" ~ "Q2 2022"))
+
+## Filter data for Q1 and Q2
+df_Q1 <- df %>% filter (Quarter== 'Q1 2022') #Filter data for Q1
+df_Q2 <- df %>% filter(Quarter== "Q2 2022") #Filter data for Q1
+```
+
+## Perform RFM analysis on Q1 2022
+
+```{r rfm Q1 2022}
+# Using Q1 2022 data
+
+## Determine the analysis date
+analysis_date <- lubridate::as_date('2022-03-31') #last day of Q1
+
+## Perform RFM analysis
+rfm_result_Q1 <- rfm_table_order(df_Q1,ID, Date, Duration, analysis_date)
+
+# Customer segmentation
+segments_Q1 <- rfm_segment(rfm_result_Q1, segment_names, recency_lower, recency_upper,
+frequency_lower, frequency_upper, monetary_lower, monetary_upper)
+
+# Customer Segmentation Table
+segments_table_Q1 <- segments_Q1 %>%
+  distinct(ID, .keep_all = TRUE) %>% 
+  group_by(segment) %>% 
+  summarise(Recency_mean = mean(recency_days), Frequency_mean = mean(transaction_count), Duration_mean = mean(amount), Count = n()) %>%
+  mutate(Proportion=Count/sum(Count))
+
+```
+
+## Perform RFM analysis on Q2 2022
+
+```{r rfm Q2 2022}
+# Using Q2 2022 data
+
+## Determine the analysis date
+analysis_date <- lubridate::as_date('2022-06-30') #take last day of Q2
+
+## Perform RFM analysis
+rfm_result_Q2 <- rfm_table_order(df_Q2,ID, Date, Duration, analysis_date)
+
+# Customer segmentation
+segments_Q2 <- rfm_segment(rfm_result_Q2, segment_names, recency_lower, recency_upper,
+frequency_lower, frequency_upper, monetary_lower, monetary_upper)
+
+# Customer Segmentation Table
+segments_table_Q2 <- segments_Q2 %>%
+  distinct(ID, .keep_all = TRUE) %>% 
+  group_by(segment) %>% 
+  summarise(Recency_mean = mean(recency_days), Frequency_mean = mean(transaction_count), Duration_mean = mean(amount), Count = n())  %>%
+  mutate(Proportion=Count/sum(Count))
+
+segments_table_Q1
+segments_table_Q2
+```
+
+## Evaluate the change
+
+```{r change in rfm}
+# Summarise the aggregate changes between Q1 and Q2. 
+quarter_change <- cbind(segments_table_Q2[1],segments_table_Q2[,-1] - segments_table_Q1[,-1])
+
+# Explore individual changes  between Q1 and Q2.
+
+## One approach that we could use to identify valuable customers who may need more encouragement or personal follow up is to look at the change in the RFM score.  An increase in RFM score can be an indicator of increase in customer's attachment towards your business. On the other hand, a decrease in RFM score can be an indicator of decrease in your customer's attachment. 
+
+## Using change in RFM identify the number of customers who were initially Gym Addicts in Q1 but have their RFM score decreased more than 200 in Q2.
+
+
+unique_segments_Q1 <- segments_Q1 %>%  distinct(ID, .keep_all = TRUE) 
+unique_segments_Q2 <- segments_Q2 %>%  distinct(ID, .keep_all = TRUE)
+ 
+rfm_change <- full_join(unique_segments_Q1, unique_segments_Q2, by = "customer_id") %>% #merge the 2 quarter segments
+select(c("customer_id","rfm_score.x","segment.x", "rfm_score.y","segment.y")) %>% 
+  rename(rfm_score_Q1 = rfm_score.x, segment_Q1 = segment.x, rfm_score_Q2 = rfm_score.y, segment_Q2 = segment.y ) %>% 
+  mutate(change = rfm_score_Q2-rfm_score_Q1)
+
+rfm_change %>% filter(segment_Q1 == "Gym Addicts", change < -200)
+
+## Alternatively, we can also identify who are the Q1 Gym Addicts that are now At-Risk customers
+rfm_change %>% filter(segment_Q1 == "Gym Addicts", segment_Q2== "At-Risk")
+
+## We can also identify who are the Q1 Gym Addicts who no longer visited the gym in Q2.
+rfm_change %>% filter(segment_Q1 == "Gym Addicts", is.na(segment_Q2))
+```
+
+# K-Means Clustering
+
+## Merging the dataframes/variables of interest
+```{r merge demographics}
+# Change the factor order of the age category
+df$Age <- factor(df$Age, levels = c("<30", "30-39", "40-49", "50-59", ">=60")) 
+
+# Merging
+
+## Select columns that contain background information
+background <- df %>% 
+  group_by(ID) %>% 
+  slice(which.max(Date)) %>%
+  select(ID,Passtype,ULU, Gender, Age) 
+## some customer's demographics get updated, e.g. 16JW Gym Membership ended in June 2022, so we select their most updated demographics information by using "slice(which.max(Date))" 
+
+## Left join 
+segments_with_info <- left_join(segments,background, by=c("customer_id"="ID"))
+unique_df <- segments_with_info %>% distinct(ID, .keep_all = TRUE)
+unique_df <- rename (unique_df, Passtype = Passtype.x, ULU = ULU.x, Gender = Gender.x, Age = Age.x)
+
+u_df <- unique_df %>% 
+  select(customer_id, segment, rfm_score, transaction_count, recency_days, amount, recency_score, frequency_score, monetary_score, Passtype, ULU, Gender, Age)
+
+```
+
+## Data Exploration
+
+```{r}
+## Obtain the counts, averages, and five number summaries
+summary(u_df)
+
+## Check correlation between variables used for RFM, closing it is to 1, the stronger the correlation
+cor(u_df[,c("recency_days","transaction_count", "amount")]) 
+
+## Create a new variable for average duration per visit
+u_df <- u_df %>% mutate(avg_duration = amount/transaction_count) 
+
+## Check correlation again
+cor(u_df[,c("recency_days", "transaction_count","avg_duration")]) 
+
+## Plot the distributions using histograms
+hist(u_df$transaction_count, main = paste("Histogram of Number of Visits"), xlab = "Number of visits")
+hist(u_df$recency_days, main = paste("Histogram of Customer Recency"), xlab = "Number of days since last visit")
+hist(u_df$avg_duration, main = paste("Histogram of Average Duration"), xlab = "Average Duration (mins)")
+
+# Outliers defined as > 2 standard deviations 
+
+```
+
+## Data Proprocessing: Scale the variables using z-score standardisation
+
+```{r}
+## Standardise the recency_days, transaction_count and avg_duration using preProcess() from the Caret library 
+preProcValues <- preProcess(u_df[,c("recency_days", "transaction_count","avg_duration")], method=c("center", "scale"))
+
+# New u_df, where values are standardised
+u_df_std <- predict(preProcValues,u_df[,c("recency_days", "transaction_count","avg_duration")])
+
+colMeans(u_df_std)
+
+summary(u_df_std)
+```
+
+## K-means Clustering: Find the optimal number of clusters
+
+```{r}
+# The Elbow Graph
+fviz_nbclust(u_df_std[,c("recency_days", "transaction_count","avg_duration")], kmeans, method = "wss")
+
+# The Silhouette Graph
+fviz_nbclust(u_df_std[,c("recency_days", "transaction_count","avg_duration")], kmeans, method = "silhouette") 
+
+```
+
+## K-means Clustering with k = 4
+
+```{r}
+set.seed(10) #set seed number 
+kmeans_4 <- kmeans(u_df_std, 4)
+
+# Size of each cluster
+kmeans_4$size
+
+# Visualising the k-means clusters
+## 1. Plot the clusters using a 3D scatterplot by using plot_ly from the plotly library
+
+u_df <- u_df %>% mutate(kcluster4 = kmeans_4$cluster) #create an additional column to indicate each customer's cluster assignment (1-4)
+
+plot_ly(u_df, x= ~transaction_count, y= ~recency_days, z= ~avg_duration, type="scatter3d", mode="markers", color =~kcluster4)
+
+## 2. Using fviz_cluster() from the factoExtra library
+fviz_cluster(kmeans_4,u_df_std[,c("recency_days", "transaction_count","avg_duration")], ellipse.type = "norm")
+
+## Visualise the Silhouette Information
+sil <- silhouette(kmeans_4$cluster, dist(u_df_std[,c("recency_days", "transaction_count","avg_duration")]))
+fviz_silhouette(sil)
+
+## View the observations with negative Silhouette width
+sil
+```
+
+## What kind of customers does each cluster represent? 
+
+```{r}
+# Create a Summary Table for the clusters 
+u_df %>% group_by(u_df$kcluster4) %>% 
+  summarise(mean_visitation_count = mean(transaction_count), mean_recency = mean(recency_days),  mean_duration = mean(avg_duration), n_customer = n())
+
+# Cluster 2 - high visiting count of 55 times, can be Gym Addicts
+# Cluster 4 - low visitation count, high recency, can be At-Risk customers
+
+# How are the RFM customer segmentation and K-Means clustering different? 
+table(u_df$kcluster4, u_df$segment)
+```
+
+# Hierarchical Clustering 
+
+Hierarchical clustering, also known as hierarchical cluster analysis, is an algorithm that groups similar objects into groups called clusters. The endpoint is a set of clusters, where each cluster is distinct from each other cluster, and the objects within each cluster are broadly similar to each other
+
+
+## Hierarchical Clustering with k = 4
+
+```{r}
+# Generate Distance Matrix using euclidean 
+hc_dist <- dist(u_df_std, method="euclidean")
+
+# You can view the first 7 customers
+as.matrix(hc_dist)[1:7, 1:7]
+
+# Implement Hierarchical Clustering
+hc_cluster <- hclust(d=hc_dist, method="average")
+hc_cluster
+
+# Calculate the cophenetic distance coefficient
+cophenetic_distances <- cophenetic(hc_cluster)
+cor(hc_dist, cophenetic_distances)
+
+# Plot the dendrogram
+plot(hc_cluster)
+
+# Plot the k=4 cluster
+rect.hclust(hc_cluster, k=4, border = 1:9) 
+
+# As you can see, the dendrogram is very messy due to the large dataset.
+# Let's try preforming the Hierarchical Clustering steps with a sample data from the gym.
+#If you are working with a large dataset with many observations, you are generally better off avoiding hierarchical clustering
+
+```
+
+## Hierarchical Clustering with 40 random samples from original dataset.
+
+```{r}
+# Randomly sample 40 from the u_df dataset (remember the set.seed)
+set.seed(44)
+u_df1 <- u_df[sample(nrow(u_df), 40),]
+
+# Standardise the recency_days, transaction_count and avg_duration. Do remember to install and upload the "caret" library.
+preProcValues <- preProcess(u_df1[,c("recency_days", "transaction_count","avg_duration")], method=c("center", "scale"))
+
+u_df1_std <- predict(preProcValues,u_df1[,c("recency_days", "transaction_count","avg_duration")])
+
+u_df1_dist <- dist(u_df1_std, method="euclidean")
+
+# First 7 Customers
+as.matrix(u_df1_dist)[1:7, 1:7]
+
+# The Silhouette Graph (hcut method)
+fviz_nbclust(u_df1_std[,c("recency_days", "transaction_count","avg_duration")], hcut, method = "silhouette") 
+
+# Implement Hierarchical Clustering 
+u_df1_hc <- hclust(d=u_df1_dist, method="average")
+u_df1_hc
+
+# Calculate the cophenetic distance coefficient
+u_df1_cophenetic_distances <- cophenetic(u_df1_hc)
+cor(u_df1_dist, u_df1_cophenetic_distances)
+
+# Obtain K=4 Hierarchical Cluster Assignments
+u_df1$hcluster4 <- cutree(tree=u_df1_hc, k=4)
+
+# Show the number of observations in each cluster group
+table(u_df1$hcluster4)
+
+# Plot the dendrogram
+plot(u_df1_hc)
+
+# Plot rectangle for k=4 cluster
+rect.hclust(u_df1_hc, k=4, border = 2:5) 
+
+# Other variations for the dendrogram
+plot(u_df1_hc, hang =-1)
+plot(u_df1_hc, cex =0.6)  #text size
+plot(u_df1_hc, hang = -1, cex =0.6) #alignment
+
+
+# Examining the threshold and number of clusters
+# To draw a threshold line
+abline(h = 3, lty = 1, col="red")
+# Clusters if the threshold is at 3 is 2
+
+abline(h = 2.5, lty = 2, col="blue")
+# Clusters if the threshold is at 2.5 is 4
+
+```
+
+## Visualisation of Hierarchical Clustering (k=5)
+
+```{r}
+# Plot using the standard scatterplot
+u_df1 %>%
+    ggplot(aes(x=recency_days, y=transaction_count, color=factor(hcluster4)))+
+    geom_point(size=3) + labs(color = "Cluster")
+
+u_df1 %>%
+    ggplot(aes(x=recency_days, y=avg_duration, color=factor(hcluster4)))+
+    geom_point(size=3) + labs(color = "Cluster")
+
+u_df1 %>%
+    ggplot(aes(x=transaction_count, y=avg_duration, color=factor(hcluster4)))+
+    geom_point(size=3) + labs(color = "Cluster")
+
+
+# Plot Hierarchical Clustering observations on a 2D plot
+fviz_cluster(list(data=u_df1[,c("recency_days", "transaction_count","avg_duration")], cluster=u_df1$hcluster4))
+
+
+# Plot Hierarchical Clustering observations on a 3D plot
+plot_ly(u_df1, x= ~transaction_count, y= ~recency_days, z= ~avg_duration, type="scatter3d", mode="markers", color =~hcluster4)
+
+
+# Plot silhouette 
+plot(silhouette(cutree(u_df1_hc, k=4), u_df1_dist))
+
+# Visualise the Silhouette Information
+HC_sil<- silhouette(cutree(u_df1_hc, k=4), u_df1_dist)
+fviz_silhouette(HC_sil)
+
+# You can view the observations who are in the negative zone
+HC_sil
+```
+
+
+# Define linkage methods, how to choose the best linkage method for HC
+
+The hclust and agnes functions behave very similarly. However, the agnes function also provides the agglomerative coefficient, which measures the amount of clustering structure found (values closer to 1 suggest strong clustering structure).
+
+This allows us to find certain hierarchical clustering methods that can identify stronger clustering structures.
+
+```{r}
+linkmethod <- c( "average", "single", "complete", "ward")
+names(linkmethod) <- c( "average", "single", "complete", "ward")
+
+ac <- function(x) {
+  agnes(u_df1_std, method = x)$ac
+}
+
+#calculate agglomerative coefficient for each clustering linkage method
+sapply(linkmethod, ac)
+
+# Which is the best linkage method?
+```
+
+
+# Using Diana and Agnes function
+
+Top-down (Diana - divisive clustering), you would start with all the customers in a single cluster. Then you would recursively split the clusterrs into smaller subcluster based on certain criterias such as income or spending habits. For instance, you could split customers into high-income and low-income clusters, and then further divide each income group based on spending habits.
+
+Bottom-up (Agnes - agglomerative clustering), you would start with each customer as an individual cluster. Then you would iteratively merge the most similar customer/cluster based on a distance metric, such as Euclidean distance.For example, you might merge customers with similar age range or similar spending habits.
+
+```{r}
+# Agnes
+## agnes(x, metric = “euclidean”, stand = FALSE, method = “average”)
+HC_agnes <- agnes(u_df1_std)
+HC_agnes$ac
+pltree(HC_agnes, cex=0.6, hang = -1)
+rect.hclust(HC_agnes, k=3, border = 2:5)
+
+# Diana
+HC_diana <- diana(u_df1_std)
+HC_diana$dc
+pltree(HC_diana, cex=0.6, hang = -1)
+rect.hclust(HC_diana, k=3, border = 2:5)
+```
+
